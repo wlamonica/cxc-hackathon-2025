@@ -3,7 +3,9 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 import seaborn as sns
+from scipy.interpolate import interp1d
 
 def flatten(xss):
     """Flattens a list of lists"""
@@ -136,3 +138,128 @@ def cluster_data():
 
     # 8. Save the results with cluster labels
     df.to_csv("../created_datasets/clustered_countries.csv", index=False)
+
+
+def interpolate_missing_points(df: pd.DataFrame, col: str, c: str) -> pd.DataFrame:
+    """
+        given a column and a dataframe of (Country, Year) pair, will interpolate the
+        missing data of the year, given the type of the interplation. assuming (Country, Year)
+        are indices
+    """
+    
+    data = df.loc[c][col]
+    years = data.index.values
+    values = data.values
+    data = data.dropna()
+    
+    xs = data.index.values  # values of years
+    ys = data.values  # values of column
+    interp_func = interp1d(xs, ys, fill_value='extrapolate')
+
+    retVal = []
+    for i, y in enumerate(years):
+        if pd.isna(values[i]):
+            retVal.append(float(interp_func(y)))
+        else:
+            retVal.append(values[i])
+
+    df2 = df.copy()
+    df2.loc[c, col] = retVal
+    return df2
+
+def find_nan_intervals(group):
+    c = group.name
+    nan_intervals = {}
+    for col in group.columns:
+        if (col == 'Year'):
+            continue
+
+        vals = group[col]
+        years = group.index
+        start = 0
+        nan_intervals[col] = []
+        for i in range(len(vals)):
+            v  = vals[i]
+            if (not pd.isna(v) and i == start):
+                start += 1
+            elif(not pd.isna(v)):
+                nan_intervals[col].append((years[start][1], years[i][1]))
+                start = i + 1
+            # else pass
+
+    return pd.Series(nan_intervals)
+
+def interpolate_missing_intervals(df: pd.DataFrame, col: str, c: str, l) -> pd.DataFrame:
+    """
+        given a column and a dataframe of (Country, Year) pair, will interpolate the
+        missing intervals of the length less than or equal to l.
+    """
+    
+    data = df.loc[c][col]
+    df2 = df.copy()
+    values = data.values
+    years = data.index.values
+    data = data.dropna()
+    
+    xs = data.index.values
+    ys = data.values
+    if (len(xs) == 0):
+        return df2
+    interp_func = interp1d(xs, ys, fill_value='extrapolate')
+
+    retVal = []
+
+    start_idx = 0
+    end_idx = 0
+    nan_count = 0
+
+    for i in range(len(values)):
+        v = values[i]
+        retVal.append(v) # will change it later for interpolation points
+        if (pd.isna(v)):
+            nan_count += 1
+
+        if nan_count > 0 and not (pd.isna(values[start_idx]) or pd.isna(v)):
+
+            for j in range(start_idx + 1, i):
+                retVal[j] = float(interp_func(years[j])) # here
+            start_idx = i
+            nan_count = 0
+
+
+        if (not pd.isna(v)):
+            start_idx = i
+            nan_count = 0
+
+        if (i - start_idx >= l):
+            if (pd.isna(values[start_idx])):
+                nan_count -= 1
+            start_idx += 1
+        
+    df2.loc[c, col] = retVal
+    
+    return df2
+
+def interpolate_all_missing_intervals(df: pd.DataFrame, l: int) -> pd.DataFrame:
+    """
+    Applies interpolation for missing values in all country-feature pairs, 
+    filling gaps of length less than or equal to `l`.
+    
+    Parameters:
+        df (pd.DataFrame): The input dataframe with multi-index (Country, Year).
+        l (int): The maximum length of NaN gaps to interpolate.
+    
+    Returns:
+        pd.DataFrame: A new dataframe with interpolated values.
+    """
+    df_copy = df.copy()
+
+    countries = df_copy.index.get_level_values("Country").unique()
+    features = df_copy.columns
+
+    with tqdm(total=len(countries) * len(features), desc="Interpolating Missing Values") as pbar:
+        for country in countries:
+            for feature in features:
+                df_copy = interpolate_missing_intervals(df_copy, feature, country, l)
+                pbar.update(1)
+    return df_copy
